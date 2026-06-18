@@ -99,7 +99,7 @@ void AvgPool(int32_t N, int32_t H, int32_t W, int32_t C, int32_t ksizeH,
              int32_t strideW, int32_t N1, int32_t imgH, int32_t imgW,
              int32_t C1, MASK_PAIR(GroupElement *inArr), MASK_PAIR(GroupElement *outArr));
 
-void ScaleDown(int32_t size, MASK_PAIR(GroupElement *inArr), int32_t sf);
+void ScaleDown(int32_t size, MASK_PAIR(GroupElement *inArr), int32_t sf, bool doReconstruct = true);
 
 void ScaleUp(int32_t size, MASK_PAIR(GroupElement *inArr), int32_t sf);
 
@@ -109,7 +109,7 @@ void Floor(int32_t s1, MASK_PAIR(GroupElement *inArr), MASK_PAIR(GroupElement *o
 
 void PiranhaSoftmax(int32_t s1, int32_t s2, MASK_PAIR(GroupElement *inArr), MASK_PAIR(GroupElement *outArr), int32_t sf);
 
-void ARS(int32_t size, MASK_PAIR(GroupElement *inArr), MASK_PAIR(GroupElement *outArr), int32_t shift);
+void ARS(int32_t size, MASK_PAIR(GroupElement *inArr), MASK_PAIR(GroupElement *outArr), int32_t shift, bool doReconstruct = true);
 
 void Select(int32_t size, GroupElement *s, GroupElement *x, GroupElement *out, std::string prefix = "", bool doReconstruct = true);
 void Select(int32_t size, int bin, GroupElement *s, GroupElement *x, GroupElement *out, std::string prefix = "", bool doReconstruct = true);

@@ -648,7 +648,7 @@ void ars_threads_helper(int thread_idx, int32_t size, GroupElement *inArr, Group
         evalMicroseconds += (reconstruct_time + compute_time);
         lolEvalMicroseconds += (reconstruct_time + compute_time);
 */
-void ARS(int32_t size, MASK_PAIR(GroupElement *inArr), MASK_PAIR(GroupElement *outArr), int32_t shift)
+void ARS(int32_t size, MASK_PAIR(GroupElement *inArr), MASK_PAIR(GroupElement *outArr), int32_t shift, bool doReconstruct)
 {
     std::cerr << ">> Truncate" << (LlamaConfig::stochasticT ? " (stochastic)" : "") << " - Start" << std::endl;
     if (party == DEALER)
@@ -705,7 +705,8 @@ void ARS(int32_t size, MASK_PAIR(GroupElement *inArr), MASK_PAIR(GroupElement *o
         auto mid = std::chrono::high_resolution_clock::now();
 
         uint64_t onlineComm0 = peer->bytesReceived() + peer->bytesSent();
-        reconstruct(size, outArr, bitlength);
+        if (doReconstruct)
+            reconstruct(size, outArr, bitlength);
         uint64_t onlineComm1 = peer->bytesReceived() + peer->bytesSent();
         arsOnlineComm += (onlineComm1 - onlineComm0);
 
@@ -724,7 +725,7 @@ void ARS(int32_t size, MASK_PAIR(GroupElement *inArr), MASK_PAIR(GroupElement *o
     std::cerr << ">> Truncate - End" << std::endl;
 }
 
-void ScaleDown(int32_t size, MASK_PAIR(GroupElement *inArr), int32_t sf)
+void ScaleDown(int32_t size, MASK_PAIR(GroupElement *inArr), int32_t sf, bool doReconstruct)
 {
     std::cerr << ">> ScaleDown - Start " << std::endl;
 
@@ -762,7 +763,7 @@ void ScaleDown(int32_t size, MASK_PAIR(GroupElement *inArr), int32_t sf)
     }
     else
     {
-        ARS(size, inArr, inArr_mask, inArr, inArr_mask, sf);
+        ARS(size, inArr, inArr_mask, inArr, inArr_mask, sf, doReconstruct);
     }
     std::cerr << ">> ScaleDown - End " << std::endl;
 }
@@ -4888,7 +4889,9 @@ void ElemWiseSecretSharedVectorMult(int32_t size, MASK_PAIR(GroupElement *inArr)
             thread_pool[i].join();
         }
         auto mid = std::chrono::high_resolution_clock::now();
-        // reconstruct(size, outputArr, bitlength);
+        // TruncXpert alignment: reconstruct the beaver-mult result (needed by PiranhaSoftmax's
+        // numerator*inv_denominator step; the GPU online path expects the reconstructed value).
+        reconstruct(size, outputArr, bitlength);
         auto end = std::chrono::high_resolution_clock::now();
         auto compute_time = std::chrono::duration_cast<std::chrono::microseconds>(mid - start).count();
         auto reconstruct_time = std::chrono::duration_cast<std::chrono::microseconds>(end - mid).count();
@@ -4998,17 +5001,11 @@ void PiranhaSoftmax(int32_t s1, int32_t s2, MASK_PAIR(GroupElement *inArr), MASK
 
     always_assert((s1 & (s1 - 1)) == 0);
     auto logs1 = osuCrypto::log2ceil(s1);
-    for (int i = 0; i < s1 * s2; ++i)
-    {
-        if (party == DEALER)
-        {
-            outArr_mask[i] = outArr_mask[i] >> (sf + logs1);
-        }
-        else
-        {
-            outArr[i] = outArr[i] >> (sf + logs1);
-        }
-    }
+    // TruncXpert alignment: faithful FSS truncation (ScaleDown, doReconstruct=false to keep
+    // it as a share for the subsequent label-subtract) instead of the local right-shift.
+    // The local shift is wrong on additive shares (carry/wrap error up to 2^(bw-k)) and breaks
+    // ciphertext training through softmax.
+    ScaleDown(s1 * s2, MASK_PAIR(outArr), sf + logs1, false);
     std::cerr << ">> Softmax - end" << std::endl;
 
     delete[] expandedDenominator;

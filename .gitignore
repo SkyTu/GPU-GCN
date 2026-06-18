@@ -1,0 +1,17 @@
+# generated FSS datasets / shares (regenerate via prepare_*.py / canonical_export.py)
+experiments/GCN/datasets/
+experiments/GCN/keys/
+experiments/GCN/logs/
+**/__pycache__/
+*.pyc
+*.bin
+# compiled binaries (build with `make <target>`)
+experiments/GCN/gcn_dealer
+experiments/GCN/gcn_evaluator
+experiments/GCN/unlearning/oblivious_select
+experiments/GCN/unlearning/oblivious_select_beaver
+tests/GNN/standard_gcn_fss_train
+tests/GNN/standard_gcn_fss_inference
+tests/GNN/grapheraser_fss_l1_inference
+tests/GNN/grapheraser_fss_l2_aggregate
+tests/GNN/grapheraser_fss_l3_lbaggr

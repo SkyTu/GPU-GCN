@@ -103,8 +103,10 @@ void SigmaPeer::recvBytes(u8 *data, size_t size)
     peer->keyBuf->bytesReceived += size;
 }
 
+unsigned long long g_commRounds = 0;
 void SigmaPeer::exchangeShares(u8 *to_send, size_t bytes, Stats *s)
 {
+    g_commRounds++;
     auto start = std::chrono::high_resolution_clock::now();
     // #pragma omp parallel /*sections*/ num_threads(2)
     //     {

@@ -136,3 +136,39 @@ clean:
 	rm experiments/orca/piranha
 	rm experiments/sigma/sigma
 	
+
+gcn_dealer: experiments/GCN/gcn_dealer.cu
+	$(CXX) $(FLAGS) $(INCLUDES) $^ $(UTIL_FILES) $(LIBS) $(SECFLOAT_LIBS) -o experiments/GCN/gcn_dealer
+
+gcn_evaluator: experiments/GCN/gcn_evaluator.cu
+	$(CXX) $(FLAGS) $(INCLUDES) $^ $(UTIL_FILES) $(LIBS) $(SECFLOAT_LIBS) -Xcompiler=-rdynamic -o experiments/GCN/gcn_evaluator
+
+gcn: gcn_dealer gcn_evaluator
+
+oblivious_select_beaver: experiments/GCN/unlearning/oblivious_select_beaver.cu
+	$(CXX) $(FLAGS) $(INCLUDES) $^ $(UTIL_FILES) $(LIBS) $(SECFLOAT_LIBS) -o experiments/GCN/unlearning/oblivious_select_beaver
+
+oblivious_select: experiments/GCN/unlearning/oblivious_select.cu
+	$(CXX) $(FLAGS) $(INCLUDES) $^ $(UTIL_FILES) $(LIBS) $(SECFLOAT_LIBS) -o experiments/GCN/unlearning/oblivious_select
+
+# ---- FSS GNN engine (standard_gcn + GraphEraser pipeline), ported native from OblivGU ----
+standard_gcn_fss_train: tests/GNN/standard_gcn_fss_train.cu tests/GNN/standard_gcn_fss_common.h
+	$(CXX) $(FLAGS) $(INCLUDES) tests/GNN/standard_gcn_fss_train.cu $(UTIL_FILES) $(LIBS) -o tests/GNN/standard_gcn_fss_train
+
+standard_gcn_fss_inference: tests/GNN/standard_gcn_fss_inference.cu tests/GNN/standard_gcn_fss_common.h
+	$(CXX) $(FLAGS) $(INCLUDES) tests/GNN/standard_gcn_fss_inference.cu $(UTIL_FILES) $(LIBS) -o tests/GNN/standard_gcn_fss_inference
+
+standard_gcn_fss: standard_gcn_fss_train standard_gcn_fss_inference
+
+grapheraser_fss_l1_inference: tests/GNN/grapheraser_fss_l1_inference.cu
+	$(CXX) $(FLAGS) $(INCLUDES) $^ $(UTIL_FILES) $(LIBS) -o tests/GNN/grapheraser_fss_l1_inference
+
+grapheraser_fss_l2_aggregate: tests/GNN/grapheraser_fss_l2_aggregate.cu
+	$(CXX) $(FLAGS) $(INCLUDES) $^ $(UTIL_FILES) $(LIBS) -o tests/GNN/grapheraser_fss_l2_aggregate
+
+grapheraser_fss_l3_lbaggr: tests/GNN/grapheraser_fss_l3_lbaggr.cu
+	$(CXX) $(FLAGS) $(INCLUDES) $^ $(UTIL_FILES) $(LIBS) -o tests/GNN/grapheraser_fss_l3_lbaggr
+
+grapheraser_fss: grapheraser_fss_l1_inference grapheraser_fss_l2_aggregate grapheraser_fss_l3_lbaggr
+
+gnn: standard_gcn_fss grapheraser_fss

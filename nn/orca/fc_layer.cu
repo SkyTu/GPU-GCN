@@ -44,7 +44,7 @@ namespace dcf
         FCLayer<T>::FCLayer(int bin, int bout, int M, int N, int K, dcf::TruncateType tf, dcf::TruncateType tb, bool useBias, bool computedX, bool inputIsShares)
         {
             assert(bin == bout && bin <= sizeof(T) * 8);
-            assert(useBias);
+            // useBias may be false (e.g. GCN linear layers); all bias logic below is if(useBias)-guarded.
 
             this->name = "FC";
             p.batchSz = 1;

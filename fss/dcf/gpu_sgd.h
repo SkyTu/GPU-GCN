@@ -20,6 +20,7 @@
 // SOFTWARE.
 
 #pragma once
+#include <cstdlib>
 
 #include "fss/dcf/gpu_truncate.h"
 
@@ -28,7 +29,14 @@ namespace dcf
     namespace orca
     {
         static const uint64_t lr_fp = 1;
-        static const int lr_scale[5] = {6, 6, 6, 9, 9};
+        static inline const int *_gcn_lr_scale() {
+    static int a[1024];
+    static bool done = false;
+    if (!done) { const char *e = getenv("GCN_LR_SCALE"); int v = e ? atoi(e) : 6;
+                 for (int i = 0; i < 1024; i++) a[i] = v; done = true; }
+    return a;
+}
+static const int *lr_scale = _gcn_lr_scale();
         static const uint64_t mom_fp = 29;
         static const int mom_scale = 5;
     }

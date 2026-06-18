@@ -24,6 +24,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cstdio>
+#include <execinfo.h>
 #include "helper_cuda.h"
 #include "gpu_stats.h"
 #include <cassert>
@@ -31,6 +32,7 @@
 // #include <sys/types.h>
 
 cudaMemPool_t mempool;
+bool g_gpuMemPoolEnabled = true;
 
 extern "C" void initGPUMemPool()
 {
@@ -40,7 +42,7 @@ extern "C" void initGPUMemPool()
     checkCudaErrors(cudaDeviceGetAttribute(&isMemPoolSupported,
                                            cudaDevAttrMemoryPoolsSupported, device));
     // printf("%d\n", isMemPoolSupported);
-    assert(isMemPoolSupported);
+    if (!isMemPoolSupported) { g_gpuMemPoolEnabled=false; printf("[gpu_mem] no mempool; cudaMalloc fallback\n"); return; }
     /* implicitly assumes that the device is 0 */
 
     checkCudaErrors(cudaDeviceGetDefaultMemPool(&mempool, device));
@@ -59,7 +61,8 @@ extern "C" void initGPUMemPool()
 extern "C" uint8_t *gpuMalloc(size_t size_in_bytes)
 {
     uint8_t *d_a;
-    checkCudaErrors(cudaMallocAsync(&d_a, size_in_bytes, 0));
+    if (g_gpuMemPoolEnabled) checkCudaErrors(cudaMallocAsync(&d_a, size_in_bytes, 0));
+    else checkCudaErrors(cudaMalloc(&d_a, size_in_bytes));
     return d_a;
 }
 
@@ -76,7 +79,8 @@ extern "C" uint8_t *cpuMalloc(size_t size_in_bytes, bool pin)
 
 extern "C" void gpuFree(void *d_a)
 {
-    checkCudaErrors(cudaFreeAsync(d_a, 0));
+    if (g_gpuMemPoolEnabled) checkCudaErrors(cudaFreeAsync(d_a, 0));
+    else { cudaError_t e_ = cudaFree(d_a); if (e_ != cudaSuccess) { fprintf(stderr, "[gpuFree] BAD ptr=%p err=%d(%s)\n", d_a, (int)e_, cudaGetErrorString(e_)); void *bt_[32]; int n_ = backtrace(bt_, 32); backtrace_symbols_fd(bt_, n_, 2); cudaGetLastError(); } }
 }
 
 extern "C" void cpuFree(void *h_a, bool pinned)
