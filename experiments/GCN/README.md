@@ -7,7 +7,8 @@
 |---|---|
 | `gcn_*.{h,cu,py}`（顶层） | **Clean GCN**（orca-layer 版）：`AggLayer`(密文 A·聚合) + 复用 `FCLayer`/`ReluExtendLayer` + piranha softmax(scale24)，dealer/evaluator。 |
 | `prepare_fullgraph_fss.py` | 全图 FSS 数据集生成（PyG Planetoid → 归一化 adj/feat → scale-24 2-of-2 加性 share），支持 Cora/CiteSeer/PubMed。 |
-| `unlearning/` | **Oblivious 单节点反学习**：`oblivious_select.cu`(DPF routing + gpuSelect gather) + beaver gather 变体 + `canonical_export.py` / `assemble_retrain.py` + e2e/run 脚本 + `OBLIVIOUS_UNLEARN.md`。 |
+| `unlearning/` | **Oblivious 单节点反学习**：`oblivious_select.cu`(DPF routing + gpuSelect gather + gpuSelect keep,全 select 无 Beaver) + beaver 变体(ablation) + `canonical_export.py` / `assemble_retrain.py` + e2e/run 脚本 + `OBLIVIOUS_UNLEARN.md`。 |
+| `run_train_all.sh` / `run_unlearn_all.sh` | **多数据集实验驱动**：全图密文训练 / oblivious 反学习,循环 Cora·CiteSeer(·PubMed),路径自推导、可迁移。 |
 
 ## 关键结果（密文，逐位对照明文）
 - **GraphEraser `run_all`（密文 L1/L2/L3）**：L1 逐 shard FSS 推理逐位精确(mismatch=0)；L2 mean micro-F1 — cora **0.8358** / citeseer **0.7402** / pubmed **0.8608**（与明文 GraphEraser 一致）。
@@ -24,14 +25,19 @@ CUDA_VERSION=11.8 GPU_ARCH=89 make gnn        # standard_gcn_fss_{train,inferenc
 ### A. 全图 FSS GCN 训练
 ```bash
 cd ~/GPU-GCN/experiments/GCN
+./run_train_all.sh                  # 批量:默认 Cora CiteSeer(PyG 下数据→生成 FSS 数据集→2PC 训练→报告精度)
+# 或手动单个数据集:
 python3 prepare_fullgraph_fss.py --dataset Cora --out-dir datasets/cora_standard_gcn   # 或 CiteSeer / PubMed
-# 两方 2PC（loopback），FSS_DATA_ROOT=<dataset>：
-#   tests/GNN/standard_gcn_fss_train <party> 127.0.0.1 --port <P> --epochs 80 --lr 16 --reveal-eval
+#   FSS_DATA_ROOT=<dataset> tests/GNN/standard_gcn_fss_train <party> 127.0.0.1 --port <P> --epochs 80 --lr 16 --reveal-eval
 ```
 ### B. GraphEraser 密文推理（L1/L2/L3 → mean/weighted F1）
 GraphEraser 把训练图分成 K=10 个 shard（LPA 社区划分 + per-shard GCN，明文预处理产出 partition + per-shard 权重）。FSS 侧：`grapheraser_fss_l1_inference` 逐 shard 密文推理 → `grapheraser_fss_l2_aggregate` 聚合（mean / 学得权重）→ eval。
 ### C. Oblivious 单节点反学习
-见 `unlearning/OBLIVIOUS_UNLEARN.md`，脚本 `unlearning/run_oblivious_select.sh`（select-only）/ `unlearning/run_unlearn_e2e.sh`（select → assemble → secret-mask 重训）。
+```bash
+cd ~/GPU-GCN/experiments/GCN
+OPENGU_ROOT=~/OpenGU/GULib-master ./run_unlearn_all.sh    # 批量:默认 cora citeseer(canonical→select→assemble→重训)
+```
+单步/细节见 `unlearning/OBLIVIOUS_UNLEARN.md`,脚本 `unlearning/run_oblivious_select.sh`(select-only,带验证)/ `unlearning/run_unlearn_e2e.sh`(单数据集 select → assemble → secret-mask 重训)。
 
 ## 反学习设计
 拆图(LPA, 10 shards) → 节点 secret-share → 用户密文输入查询节点 → **DPF 判定落在哪个 shard**（不揭示）→ `gpuSelect` oblivious gather 取出该子图 → 删点(keep，置零该节点邻接列 + 从 train mask 剔除) → **在子图上 secret-mask FSS 密文重训**。查询节点与其 shard 全程不揭示。删点(keep)用 1-bit `gpuSelect`(`keep_bit ? value : 0`)而非 Beaver 乘——keep 通信 ~9.77 MB(对比 Beaver 28.87,−66%),全程 7 轮(对比纯 Beaver 变体 14 轮);gather 的 274.93 MB(K×数据固有下界)两者相同。
