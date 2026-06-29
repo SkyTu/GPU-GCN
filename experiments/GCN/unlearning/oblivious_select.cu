@@ -85,50 +85,7 @@ static void writeBinT(const std::string &path, const void *p, size_t bytes)
 { std::ofstream f(path, std::ios::binary); f.write((const char *)p, bytes); }
 
 
-// ----------------------------------------------------------------------------- //
-// Elementwise secret*secret multiply  out[N] = X .* Y  (Beaver, gpuMul), dealer/eval
-// split. scale=0 / TruncateType::None: keep is 0/1 (unscaled) so A.*keep stays scale-12.
-// Used to APPLY keep (X removal): A_masked = A_sel .* keep_col (zero X's adj column),
-// train_mask_eff = train_mask_sel .* keep (drop X from the loss).
-// ----------------------------------------------------------------------------- //
-struct MulKeys { u8 *kStart = nullptr; u8 *mCShare = nullptr; size_t N = 0; };
-
-static void dealerMulKeys(u8 **kCur, int party, size_t N, AESGlobalContext *gAES, MulKeys &mk)
-{
-    auto d_mA = randomGEOnGpu<T>(N, 64);
-    auto d_mB = randomGEOnGpu<T>(N, 64);
-    mk.kStart = *kCur;
-    auto d_mC = gpuKeygenMul<T>(kCur, party, 64, 0, (int)N, d_mA, d_mB, TruncateType::None, gAES);
-    mk.mCShare = *kCur;
-    writeShares<T, T>(kCur, party, N, d_mC, 64);   // [mC] for masked-public -> share
-    mk.N = N;
-    gpuFree(d_mA); gpuFree(d_mB); gpuFree(d_mC);
-}
-
-static void evalMul(int party, const std::vector<T> &hX, const std::vector<T> &hY,
-                    GpuPeer *peer, const MulKeys &mk, AESGlobalContext *gAES, std::vector<T> &hOut)
-{
-    const size_t N = mk.N; hOut.assign(N, 0);
-    u8 *kR = mk.kStart;
-    auto k = readGPUMulKey<T>(&kR, N, N, N, TruncateType::None);
-    // open operands to masked-public using the triple's input-mask shares (k.a, k.b).
-    T *d_mAs = (T *)moveToGPU((u8 *)k.a, N * sizeof(T), nullptr);
-    T *d_X = (T *)moveToGPU((u8 *)hX.data(), N * sizeof(T), nullptr);
-    gpuLinearComb(64, (int)N, d_X, T(1), d_X, T(1), d_mAs);
-    peer->reconstructInPlace(d_X, 64, N, nullptr);
-    gpuFree(d_mAs);
-    T *d_mBs = (T *)moveToGPU((u8 *)k.b, N * sizeof(T), nullptr);
-    T *d_Y = (T *)moveToGPU((u8 *)hY.data(), N * sizeof(T), nullptr);
-    gpuLinearComb(64, (int)N, d_Y, T(1), d_Y, T(1), d_mBs);
-    peer->reconstructInPlace(d_Y, 64, N, nullptr);
-    gpuFree(d_mBs);
-    auto d_Z = gpuMul<T>(peer, party, 64, 0, (int)N, k, d_X, d_Y, TruncateType::None, gAES, nullptr);
-    // gpuMul returns masked-public (X.*Y + mC); subtract [mC] -> share.
-    T *d_mCs = (T *)moveToGPU((u8 *)mk.mCShare, N * sizeof(T), nullptr);
-    gpuLinearComb(64, (int)N, d_Z, (party == 0) ? T(1) : T(0), d_Z, T(-1), d_mCs);
-    moveIntoCPUMem((u8 *)hOut.data(), (u8 *)d_Z, N * sizeof(T), nullptr);
-    gpuFree(d_X); gpuFree(d_Y); gpuFree(d_Z); gpuFree(d_mCs);
-}
+// (the keep step now uses gpuSelect directly — no Beaver elementwise multiply needed.)
 
 int main(int argc, char *argv[])
 {
