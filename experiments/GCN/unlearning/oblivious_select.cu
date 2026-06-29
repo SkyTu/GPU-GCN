@@ -234,10 +234,15 @@ int main(int argc, char *argv[])
     auto d_mXb = randomGEOnGpu<T>(Ns, 64); auto d_mBb = randomGEOnGpu<T>(Ns, 1);
     u8 *kB2A = kCur; gpuKeyGenSelect<T, T>(&kCur, party, Ns, d_mXb, d_mBb, 64, /*opMasked=*/false);
     gpuFree(d_mXb); gpuFree(d_mBb);
-    MulKeys mkAdjKeep, mkTMKeep;
-    dealerMulKeys(&kCur, party, N2, &gAES, mkAdjKeep);         // A_sel .* keep_col
-    dealerMulKeys(&kCur, party, Ns, &gAES, mkTMKeep);          // train_mask_sel .* keep
-    fprintf(stderr, "[P%d] dealer: keys done (eq-DPF + gather select Wtot=%zu + B2A + 2 keep-muls)\n",
+    // keep (X removal) via DIRECT gpuSelect (keep_bit ? value : 0), NOT a Beaver multiply:
+    // a select opens one value + a 1-bit selector; the multiply opened BOTH operands. A over N^2.
+    auto d_mXadj = randomGEOnGpu<T>(N2, 64); auto d_mBadj = randomGEOnGpu<T>(N2, 1);
+    u8 *kAdjKeepS = kCur; gpuKeyGenSelect<T, T>(&kCur, party, (int)N2, d_mXadj, d_mBadj, 64, /*opMasked=*/false);
+    gpuFree(d_mXadj); gpuFree(d_mBadj);
+    auto d_mXtm = randomGEOnGpu<T>(Ns, 64); auto d_mBtm = randomGEOnGpu<T>(Ns, 1);
+    u8 *kTMKeepS = kCur; gpuKeyGenSelect<T, T>(&kCur, party, Ns, d_mXtm, d_mBtm, 64, /*opMasked=*/false);
+    gpuFree(d_mXtm); gpuFree(d_mBtm);
+    fprintf(stderr, "[P%d] dealer: keys done (eq-DPF + gather select Wtot=%zu + B2A + 2 keep selects)\n",
             party, Wtot); fflush(stderr);
 
     // =====================================================================
@@ -246,7 +251,9 @@ int main(int argc, char *argv[])
     // --- read phase ---
     u8 *kd = kDpfStart; auto dpfKey = readGPUDPFKey(&kd);                       // equality DPF
     u8 *ks = kSelStart; auto selKey = readGPUSelectKey<T>(&ks, (int)Ksel);      // gather select; k.a=[maskB], k.b=[maskX]
-    u8 *kb = kB2A;      auto b2aKey = readGPUSelectKey<T>(&kb, Ns);             // B2A select
+    u8 *kb = kB2A;      auto b2aKey = readGPUSelectKey<T>(&kb, Ns);             // B2A select (keep_share output)
+    u8 *kak = kAdjKeepS; auto adjKeepKey = readGPUSelectKey<T>(&kak, (int)N2);  // keep-col select on A_sel
+    u8 *ktk = kTMKeepS;  auto tmKeepKey  = readGPUSelectKey<T>(&ktk, Ns);       // keep select on train_mask
     T *d_rqs = (T *)moveToGPU((u8 *)kRqShare, Q * sizeof(T), nullptr);          // [r]
 
     auto commBytes = [&]() { return peer->bytesSent() + peer->bytesReceived(); };
@@ -346,13 +353,42 @@ int main(int argc, char *argv[])
     gpuFree(d_isXsA);
     for (int j = 0; j < Ns; ++j) h_keep[j] = ((party == 0) ? T(1) : T(0)) - h_isXsel[j];
 
-    // A_masked = A_sel .* keep_col (zero X's adj column) ; train_mask_eff = tm_sel .* keep (drop X)
-    std::vector<T> h_keepcol(N2);
-    for (int i = 0; i < Ns; ++i)
-        for (int j = 0; j < Ns; ++j) h_keepcol[(size_t)i * Ns + j] = h_keep[j];
-    std::vector<T> h_Amask, h_TMeff;
-    evalMul(party, h_Asel, h_keepcol, peer, mkAdjKeep, &gAES, h_Amask);
-    evalMul(party, h_TMsel, h_keep, peer, mkTMKeep, &gAES, h_TMeff);
+    // A_masked = keep_bit ? A_sel : 0  (zero X's adj COLUMN) ; train_mask_eff = keep_bit ? tm : 0.
+    // DIRECT gpuSelect with keep_bit = NOT isX_sel (boolean): selector ^ maskB opened at bw=1
+    // (cheap) + ONE value-open; replaces the Beaver multiply that opened both operands.
+    std::vector<u32> b_keep(Ns);
+    for (int j = 0; j < Ns; ++j) b_keep[j] = b_isXsel[j] ^ (u32)(party == 0 ? 1u : 0u);
+    std::vector<T> h_Amask(N2), h_TMeff(Ns);
+    {   // zero X's adjacency column: keep_bit[j] broadcast across rows i
+        const T *mB = adjKeepKey.a, *mX = adjKeepKey.b;
+        size_t aw = (N2 + 31) / 32; std::vector<u32> sb(aw, 0);
+        for (int i = 0; i < Ns; ++i)
+            for (int j = 0; j < Ns; ++j) { size_t e = (size_t)i * Ns + j;
+                if (b_keep[j] ^ (u32)(mB[e] & 1)) sb[e >> 5] |= (1u << (e & 31)); }
+        u32 *d_sb = (u32 *)moveToGPU((u8 *)sb.data(), aw * sizeof(u32), nullptr);
+        peer->reconstructInPlace(d_sb, 1, N2, nullptr);                       // open N^2 selector bits (1-bit, cheap)
+        T *d_v = (T *)moveToGPU((u8 *)h_Asel.data(), N2 * sizeof(T), nullptr);
+        T *d_mx = (T *)moveToGPU((u8 *)mX, N2 * sizeof(T), nullptr);
+        gpuLinearComb(64, (int)N2, d_v, T(1), d_v, T(1), d_mx);
+        peer->reconstructInPlace(d_v, 64, N2, nullptr); gpuFree(d_mx);        // masked-public value (A_sel)
+        T *d_o = gpuSelect<T, T, 0, 0>(peer, party, 64, adjKeepKey, d_sb, d_v, nullptr, /*opMasked=*/false);
+        gpuFree(d_sb); gpuFree(d_v);
+        moveIntoCPUMem((u8 *)h_Amask.data(), (u8 *)d_o, N2 * sizeof(T), nullptr); gpuFree(d_o);
+    }
+    {   // drop X from the train mask
+        const T *mB = tmKeepKey.a, *mX = tmKeepKey.b;
+        size_t tw = (Ns + 31) / 32; std::vector<u32> sb(tw, 0);
+        for (int j = 0; j < Ns; ++j) if (b_keep[j] ^ (u32)(mB[j] & 1)) sb[j >> 5] |= (1u << (j & 31));
+        u32 *d_sb = (u32 *)moveToGPU((u8 *)sb.data(), tw * sizeof(u32), nullptr);
+        peer->reconstructInPlace(d_sb, 1, Ns, nullptr);
+        T *d_v = (T *)moveToGPU((u8 *)h_TMsel.data(), Ns * sizeof(T), nullptr);
+        T *d_mx = (T *)moveToGPU((u8 *)mX, Ns * sizeof(T), nullptr);
+        gpuLinearComb(64, Ns, d_v, T(1), d_v, T(1), d_mx);
+        peer->reconstructInPlace(d_v, 64, Ns, nullptr); gpuFree(d_mx);
+        T *d_o = gpuSelect<T, T, 0, 0>(peer, party, 64, tmKeepKey, d_sb, d_v, nullptr, /*opMasked=*/false);
+        gpuFree(d_sb); gpuFree(d_v);
+        moveIntoCPUMem((u8 *)h_TMeff.data(), (u8 *)d_o, Ns * sizeof(T), nullptr); gpuFree(d_o);
+    }
     u64 cb_end = commBytes();
     fprintf(stderr, "[P%d] eval: keep applied (adj col zeroed + train_mask drops X)\n", party); fflush(stderr);
     auto t1 = std::chrono::high_resolution_clock::now();

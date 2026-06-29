@@ -27,7 +27,7 @@ RETRAIN   standard_gcn_fss_train --secret-mask
 ```
 
 Nothing about `X` or its shard is ever revealed: the DPF output is a masked 1-bit, the gather
-opens only *masked* values, the keep removal is a Beaver product, and the retrain multiplies
+opens only *masked* values, the keep removal is a 1-bit `gpuSelect` MUX (`keep_bit ? value : 0`), and the retrain multiplies
 the gradient by the *secret* mask. Revealing the train mask would fingerprint the shard (the
 community partition is public), so it is kept a share — hence `--secret-mask`.
 
@@ -50,10 +50,13 @@ select) -> lower latency.
 
 | metric | gpuSelect | beaver | note |
 |---|---|---|---|
-| communication (total) | **303.81 MB** | 303.80 MB | equal — `K×data` open dominates both |
-| &nbsp;&nbsp;– gather / keep | 274.93 / 28.88 MB | 274.93 / 28.87 MB | identical data open |
-| reconstruct **rounds** | **11** | 14 | gpuSelect ~21% fewer |
-| online **time** | **~290 ms** | ~368 ms | gpuSelect ~21% faster |
+| communication (total) | **284.72 MB** | 303.80 MB | gather identical; keep differs (select vs Beaver) |
+| &nbsp;&nbsp;– gather / keep | 274.93 / **9.79** MB | 274.93 / 28.87 MB | keep: 1-bit `gpuSelect` (−66%) vs Beaver multiply |
+| reconstruct **rounds** | **9** | 14 | gpuSelect fewer (select gather + select keep) |
+| online **time** | **lower** | higher | fewer rounds / one value-open per keep step |
+
+(The `K×(N2+NF+NC)` gather open — 274.93 MB — is identical for both and dominates the total; the
+gpuSelect variant additionally does keep removal as a 1-bit select, not a Beaver product.)
 
 Correctness (`obliv_verify.py`, numpy oracle): both **PASS** — gathered adj/feat/y_onehot/masks
 are bit-exact vs shard(X), X's adjacency column is zeroed, X is dropped from the train mask, all

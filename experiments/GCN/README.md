@@ -34,4 +34,4 @@ GraphEraser 把训练图分成 K=10 个 shard（LPA 社区划分 + per-shard GCN
 见 `unlearning/OBLIVIOUS_UNLEARN.md`，脚本 `unlearning/run_oblivious_select.sh`（select-only）/ `unlearning/run_unlearn_e2e.sh`（select → assemble → secret-mask 重训）。
 
 ## 反学习设计
-拆图(LPA, 10 shards) → 节点 secret-share → 用户密文输入查询节点 → **DPF 判定落在哪个 shard**（不揭示）→ `gpuSelect` oblivious gather 取出该子图 → 删点(keep，置零该节点邻接列 + 从 train mask 剔除) → **在子图上 secret-mask FSS 密文重训**。查询节点与其 shard 全程不揭示。gpuSelect gather 比 beaver gather 轮次少 ~21%、时间快 ~21%（通信字节相等，均为 K×数据的固有下界）。
+拆图(LPA, 10 shards) → 节点 secret-share → 用户密文输入查询节点 → **DPF 判定落在哪个 shard**（不揭示）→ `gpuSelect` oblivious gather 取出该子图 → 删点(keep，置零该节点邻接列 + 从 train mask 剔除) → **在子图上 secret-mask FSS 密文重训**。查询节点与其 shard 全程不揭示。删点(keep)用 1-bit `gpuSelect`(`keep_bit ? value : 0`)而非 Beaver 乘——keep 通信 ~9.79 MB(对比 Beaver 28.87,−66%),全程 9 轮(对比纯 Beaver 变体 14 轮);gather 的 274.93 MB(K×数据固有下界)两者相同。
