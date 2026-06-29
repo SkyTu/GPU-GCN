@@ -50,9 +50,9 @@ select) -> lower latency.
 
 | metric | gpuSelect | beaver | note |
 |---|---|---|---|
-| communication (total) | **284.72 MB** | 303.80 MB | gather identical; keep differs (select vs Beaver) |
-| &nbsp;&nbsp;– gather / keep | 274.93 / **9.79** MB | 274.93 / 28.87 MB | keep: 1-bit `gpuSelect` (−66%) vs Beaver multiply |
-| reconstruct **rounds** | **9** | 14 | gpuSelect fewer (select gather + select keep) |
+| communication (total) | **284.70 MB** | 303.80 MB | gather identical; keep differs (select vs Beaver) |
+| &nbsp;&nbsp;– gather / keep | 274.93 / **9.77** MB | 274.93 / 28.87 MB | keep: 1-bit `gpuSelect` (−66%) vs Beaver multiply |
+| reconstruct **rounds** | **7** | 14 | gpuSelect fewer (fully select-based: gather + keep, no B2A/Beaver) |
 | online **time** | **lower** | higher | fewer rounds / one value-open per keep step |
 
 (The `K×(N2+NF+NC)` gather open — 274.93 MB — is identical for both and dominates the total; the

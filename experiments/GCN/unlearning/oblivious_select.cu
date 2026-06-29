@@ -230,10 +230,6 @@ int main(int argc, char *argv[])
     gpuKeyGenSelect<T, T>(&kCur, party, (int)Ksel, d_maskX, d_maskB, 64, /*opMasked=*/false);
     gpuFree(d_maskX); gpuFree(d_maskBk); gpuFree(d_maskB);
 
-    // B2A select: isX_sel (boolean) -> arithmetic 0/1 via gpuSelect(isX_sel_bit, ones).
-    auto d_mXb = randomGEOnGpu<T>(Ns, 64); auto d_mBb = randomGEOnGpu<T>(Ns, 1);
-    u8 *kB2A = kCur; gpuKeyGenSelect<T, T>(&kCur, party, Ns, d_mXb, d_mBb, 64, /*opMasked=*/false);
-    gpuFree(d_mXb); gpuFree(d_mBb);
     // keep (X removal) via DIRECT gpuSelect (keep_bit ? value : 0), NOT a Beaver multiply:
     // a select opens one value + a 1-bit selector; the multiply opened BOTH operands. A over N^2.
     auto d_mXadj = randomGEOnGpu<T>(N2, 64); auto d_mBadj = randomGEOnGpu<T>(N2, 1);
@@ -242,7 +238,7 @@ int main(int argc, char *argv[])
     auto d_mXtm = randomGEOnGpu<T>(Ns, 64); auto d_mBtm = randomGEOnGpu<T>(Ns, 1);
     u8 *kTMKeepS = kCur; gpuKeyGenSelect<T, T>(&kCur, party, Ns, d_mXtm, d_mBtm, 64, /*opMasked=*/false);
     gpuFree(d_mXtm); gpuFree(d_mBtm);
-    fprintf(stderr, "[P%d] dealer: keys done (eq-DPF + gather select Wtot=%zu + B2A + 2 keep selects)\n",
+    fprintf(stderr, "[P%d] dealer: keys done (eq-DPF + gather select Wtot=%zu + 2 keep selects)\n",
             party, Wtot); fflush(stderr);
 
     // =====================================================================
@@ -251,7 +247,6 @@ int main(int argc, char *argv[])
     // --- read phase ---
     u8 *kd = kDpfStart; auto dpfKey = readGPUDPFKey(&kd);                       // equality DPF
     u8 *ks = kSelStart; auto selKey = readGPUSelectKey<T>(&ks, (int)Ksel);      // gather select; k.a=[maskB], k.b=[maskX]
-    u8 *kb = kB2A;      auto b2aKey = readGPUSelectKey<T>(&kb, Ns);             // B2A select (keep_share output)
     u8 *kak = kAdjKeepS; auto adjKeepKey = readGPUSelectKey<T>(&kak, (int)N2);  // keep-col select on A_sel
     u8 *ktk = kTMKeepS;  auto tmKeepKey  = readGPUSelectKey<T>(&ktk, Ns);       // keep select on train_mask
     T *d_rqs = (T *)moveToGPU((u8 *)kRqShare, Q * sizeof(T), nullptr);          // [r]
@@ -330,28 +325,6 @@ int main(int argc, char *argv[])
     fprintf(stderr, "[P%d] eval: gather select done (adj/feat/yoh/masks in one pass)\n", party); fflush(stderr);
 
     // ============================ keep (X removal) ============================
-    // B2A: isX_sel (boolean) -> arithmetic via select(isX_sel_bit, ones). keep = 1 - isX_sel.
-    const T *maskBb = b2aKey.a, *maskXb = b2aKey.b;
-    size_t b2aw = (Ns + 31) / 32;
-    std::vector<u32> h_b2asel(b2aw, 0);
-    std::vector<T> h_ones(Ns);
-    for (int j = 0; j < Ns; ++j) {
-        if (b_isXsel[j] ^ (u32)(maskBb[j] & 1)) h_b2asel[j >> 5] |= (1u << (j & 31));
-        h_ones[j] = (party == 0) ? T(1) : 0;                      // public "1" -> party0=1, party1=0
-    }
-    u32 *d_b2asel = (u32 *)moveToGPU((u8 *)h_b2asel.data(), b2aw * sizeof(u32), nullptr);
-    peer->reconstructInPlace(d_b2asel, 1, Ns, nullptr);
-    T *d_ones = (T *)moveToGPU((u8 *)h_ones.data(), Ns * sizeof(T), nullptr);
-    T *d_mXb2 = (T *)moveToGPU((u8 *)maskXb, Ns * sizeof(T), nullptr);
-    gpuLinearComb(64, Ns, d_ones, T(1), d_ones, T(1), d_mXb2);
-    peer->reconstructInPlace(d_ones, 64, Ns, nullptr);
-    gpuFree(d_mXb2);
-    T *d_isXsA = gpuSelect<T, T, 0, 0>(peer, party, 64, b2aKey, d_b2asel, d_ones, nullptr, false);
-    gpuFree(d_b2asel); gpuFree(d_ones);
-    std::vector<T> h_isXsel(Ns), h_keep(Ns);
-    moveIntoCPUMem((u8 *)h_isXsel.data(), (u8 *)d_isXsA, Ns * sizeof(T), nullptr);
-    gpuFree(d_isXsA);
-    for (int j = 0; j < Ns; ++j) h_keep[j] = ((party == 0) ? T(1) : T(0)) - h_isXsel[j];
 
     // A_masked = keep_bit ? A_sel : 0  (zero X's adj COLUMN) ; train_mask_eff = keep_bit ? tm : 0.
     // DIRECT gpuSelect with keep_bit = NOT isX_sel (boolean): selector ^ maskB opened at bw=1
@@ -406,13 +379,11 @@ int main(int argc, char *argv[])
     writeBinT(sd + "/yohsel_share" + std::to_string(party) + ".bin", h_Yohsel.data(), NC * sizeof(T));
     writeBinT(sd + "/trainmask_share" + std::to_string(party) + ".bin", h_TMeff.data(), Ns * sizeof(T)); // X dropped
     writeBinT(sd + "/testmask_share" + std::to_string(party) + ".bin", h_TEsel.data(), Ns * sizeof(T));
-    writeBinT(sd + "/keep_share" + std::to_string(party) + ".bin", h_keep.data(), Ns * sizeof(T));
-    writeBinT(sd + "/isxsel_share" + std::to_string(party) + ".bin", h_isXsel.data(), Ns * sizeof(T));
 
     if (party == 0) {
         printf("[obliv-select] isX over %zu rows (K=%d Ns=%d) via 1-bit equality DPF, X never revealed\n", Q, K, Ns);
-        printf("[obliv-select] gather = ONE gpuSelect(shard one-hot, concatenated cat) over Wtot=%zu; keep B2A+mul\n", Wtot);
-        printf("[obliv-select] wrote %s/{Asel_share*,keep_share*,isxsel_share*}.bin\n", sd.c_str());
+        printf("[obliv-select] gather = ONE gpuSelect(shard one-hot, concatenated cat) over Wtot=%zu; keep = 1-bit select\n", Wtot);
+        printf("[obliv-select] wrote %s/{Asel_share*,featsel_share*,yohsel_share*,trainmask_share*,testmask_share*}.bin\n", sd.c_str());
     }
     // optional: reveal the gathered subgraph for the numpy oracle (obliv_verify.py).
     // (debug only; the real pipeline keeps everything secret-shared.)
@@ -429,8 +400,7 @@ int main(int argc, char *argv[])
         reveal(h_Yohsel, NC, "yohsel");
         reveal(h_TMeff, Ns, "tmeff");      // keep-applied train_mask (X dropped)
         reveal(h_TEsel, Ns, "testmask");
-        reveal(h_keep, Ns, "keep");
-        if (party == 0) printf("[obliv-select] (reveal) wrote {Amask,featsel,yohsel,tmeff,testmask,keep}_clear.bin\n");
+        if (party == 0) printf("[obliv-select] (reveal) wrote {Amask,featsel,yohsel,tmeff,testmask}_clear.bin\n");
     }
     peer->sync();
     return 0;
